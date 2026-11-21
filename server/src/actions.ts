@@ -53,6 +53,7 @@ const profileStateSchema = z.object({
   goalsFor: z.number(),
   goalsAgainst: z.number(),
   squad: z.array(z.object({ playerId: z.string(), inXi: z.boolean() })),
+  formationJson: z.string().nullable(),
   tournamentJson: z.string().nullable(),
   isNew: z.boolean(),
 });
@@ -119,6 +120,7 @@ async function loadState(
     goalsFor: profile.goalsFor,
     goalsAgainst: profile.goalsAgainst,
     squad: squadRows.map((r) => ({ playerId: r.playerId, inXi: r.inXi === 1 })),
+    formationJson: profile.formationJson ?? null,
     tournamentJson: tRows[0]?.json ?? null,
     isNew,
   };
@@ -243,6 +245,59 @@ export const Actions = {
           .update(schema.squadPlayers)
           .set({ inXi: unique.has(r.playerId) ? 1 : 0 })
           .where(eq(schema.squadPlayers.id, r.id)),
+      );
+      const [first, ...rest] = statements;
+      if (first) await db.batch([first, ...rest]);
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  saveFormation: defineAction({
+    description: "Saves the account's custom formation (11 slots with player, role label and pitch position) and syncs the starting eleven to match it.",
+    request: z.object({
+      profileId: z.number().int().positive(),
+      slots: z
+        .array(
+          z.object({
+            playerId: z.string().min(1).max(60),
+            role: z.string().min(1).max(4),
+            x: z.number().min(0).max(100),
+            y: z.number().min(0).max(100),
+          }),
+        )
+        .length(11),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      const owned = await db
+        .select()
+        .from(schema.squadPlayers)
+        .where(eq(schema.squadPlayers.profileId, args.profileId));
+      const ownedIds = new Set(owned.map((r) => r.playerId));
+      const unique = new Set(args.slots.map((s) => s.playerId));
+      if (unique.size !== 11) throw new Error("ফরমেশনে ১১ জন আলাদা খেলোয়াড় লাগবে");
+      for (const s of args.slots) {
+        if (!ownedIds.has(s.playerId)) throw new Error("এই খেলোয়াড় তোমার দলে নেই");
+      }
+      const gkSlots = args.slots.filter((s) => s.role === "GK");
+      if (gkSlots.length !== 1) throw new Error("ফরমেশনে ঠিক একজন গোলকিপার (GK) লাগবে");
+      const gkPlayer = PLAYER_BY_ID.get(gkSlots[0]?.playerId ?? "");
+      if (!gkPlayer || gkPlayer.group !== "GK") {
+        throw new Error("GK জায়গায় আসল গোলকিপার বসাও");
+      }
+      const statements: BatchItem<"sqlite">[] = owned.map((r) =>
+        db
+          .update(schema.squadPlayers)
+          .set({ inXi: unique.has(r.playerId) ? 1 : 0 })
+          .where(eq(schema.squadPlayers.id, r.id)),
+      );
+      statements.push(
+        db
+          .update(schema.profiles)
+          .set({ formationJson: JSON.stringify({ slots: args.slots }) })
+          .where(eq(schema.profiles.id, args.profileId)),
       );
       const [first, ...rest] = statements;
       if (first) await db.batch([first, ...rest]);
