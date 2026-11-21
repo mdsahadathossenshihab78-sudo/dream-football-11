@@ -8,6 +8,7 @@ import { useMutation } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
 import { MatchEngine, type EnginePlayerInfo, type HudState } from "./engine";
 import { FlagBadge, TeamLogo } from "./branding";
+import { sound } from "./sound";
 
 type TeamDef = ApiResponse<typeof api, "getCatalog">["teams"][number];
 
@@ -24,6 +25,8 @@ interface Props {
   cpuTeam: TeamDef;
   userXI: EnginePlayerInfo[];
   cpuXI: EnginePlayerInfo[];
+  /** User formation homes in engine pitch units, aligned with userXI. */
+  userSlots?: { x: number; y: number }[];
   mode: "quick" | "tournament";
   stage: "qf" | "sf" | "f" | null;
   onFinish: (r: MatchFinish) => void;
@@ -47,12 +50,15 @@ export function MatchScreen(props: Props) {
     () => window.innerWidth > window.innerHeight,
   );
   const fsEntered = useRef(false);
+  const startingRef = useRef(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const [hud, setHud] = useState<HudState | null>(null);
   const [goalFlash, setGoalFlash] = useState<{ text: string; mine: boolean; key: number } | null>(null);
   const [finalScore, setFinalScore] = useState<{ ug: number; cg: number } | null>(null);
   const [pensWinner, setPensWinner] = useState<"user" | "cpu" | null>(null);
   const [coinsEarned, setCoinsEarned] = useState<number | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
+  const [mutedUi, setMutedUi] = useState<boolean>(() => sound.isMuted());
 
   const record = useMutation({
     mutationFn: (args: {
@@ -85,6 +91,7 @@ export function MatchScreen(props: Props) {
 
   const handleEnd = (ug: number, cg: number) => {
     setFinalScore({ ug, cg });
+    sound.fulltime();
     if (props.mode === "tournament" && ug === cg) {
       setPhase("pens");
       return;
@@ -116,55 +123,106 @@ export function MatchScreen(props: Props) {
   }, [landscape]);
 
   const startMatch = () => {
-    const canvas = canvasRef.current;
-    if (!canvas || engineRef.current) return;
-    // Best effort: go fullscreen and lock landscape on phones, like a real
-    // football game. Silently ignored where the frame forbids it — the
-    // player can still rotate the phone manually.
-    try {
-      const req = document.documentElement.requestFullscreen?.();
-      if (req) {
-        void req
-          .then(() => {
-            fsEntered.current = true;
-            const so = screen.orientation as ScreenOrientation & {
-              lock?: (o: "landscape") => Promise<void>;
-            };
-            return so.lock?.("landscape");
-          })
-          .catch(() => {});
-      }
-    } catch {
-      // fullscreen unavailable — play on without it
-    }
-    const userRating =
-      props.userXI.reduce((s, pl) => s + pl.rating, 0) / Math.max(1, props.userXI.length);
-    const engine = new MatchEngine(canvas, {
-      userXI: props.userXI,
-      cpuXI: props.cpuXI,
-      userTeam: { name: userTeam.name, short: userTeam.short, color: userTeam.color, color2: userTeam.color2 },
-      cpuTeam: { name: cpuTeam.name, short: cpuTeam.short, color: cpuTeam.color, color2: cpuTeam.color2 },
-      durationSec: 120,
-      cpuRating: cpuTeam.rating,
-      userRating,
-      callbacks: {
-        onGoal: (scorer, ug, cg) => {
-          setGoalFlash({
-            text: scorer === "user" ? "গোল!" : "গোল খেয়ে গেলে!",
-            mine: scorer === "user",
-            key: Date.now(),
-          });
-          setHud((h) => (h ? { ...h, userGoals: ug, cpuGoals: cg } : h));
-          window.setTimeout(() => setGoalFlash(null), 2100);
-        },
-        onEnd: handleEnd,
-        onHud: setHud,
-      },
-    });
-    engineRef.current = engine;
-    engine.setLandscape(window.innerWidth > window.innerHeight);
-    engine.start();
+    if (engineRef.current || startingRef.current) return;
+    startingRef.current = true;
+    setStartError(null);
+    // Leave the VS screen IMMEDIATELY: the tap must visibly start the
+    // match. The engine is created on the next frame, once the playing
+    // layout (thumb-zone clearance) has settled and the canvas sits at
+    // its real playing size — creating it behind the overlay measured
+    // it at the wrong moment on some phone WebViews and the pitch
+    // never appeared, leaving the VS screen looking stuck.
     setPhase("playing");
+    try {
+      sound.unlock();
+    } catch {
+      // audio must never gate the match
+    }
+    requestAnimationFrame(() => {
+      try {
+        const canvas = canvasRef.current;
+        if (!canvas) throw new Error("canvas missing");
+        if (engineRef.current) return;
+        const userRating =
+          props.userXI.reduce((s, pl) => s + pl.rating, 0) / Math.max(1, props.userXI.length);
+        const engine = new MatchEngine(canvas, {
+          userXI: props.userXI,
+          cpuXI: props.cpuXI,
+          userSlots: props.userSlots,
+          userTeam: { name: userTeam.name, short: userTeam.short, color: userTeam.color, color2: userTeam.color2 },
+          cpuTeam: { name: cpuTeam.name, short: cpuTeam.short, color: cpuTeam.color, color2: cpuTeam.color2 },
+          // A full 90-minute match in 6 real minutes: the clock runs
+          // 15× fast and full-time blows at 6:00 of real time.
+          durationSec: 360,
+          cpuRating: cpuTeam.rating,
+          userRating,
+          callbacks: {
+            onGoal: (scorer, ug, cg) => {
+              try {
+                sound.goal(scorer === "user");
+              } catch {
+                // celebration sound is decoration only
+              }
+              setGoalFlash({
+                text: scorer === "user" ? "গোল!" : "গোল খেয়ে গেলে!",
+                mine: scorer === "user",
+                key: Date.now(),
+              });
+              setHud((h) => (h ? { ...h, userGoals: ug, cpuGoals: cg } : h));
+              window.setTimeout(() => setGoalFlash(null), 2100);
+            },
+            onEnd: handleEnd,
+            onHud: setHud,
+          },
+        });
+        engineRef.current = engine;
+        engine.setLandscape(window.innerWidth > window.innerHeight);
+        engine.start();
+        try {
+          sound.kickoff();
+        } catch {
+          // whistle is decoration only
+        }
+        // Best effort AFTER play has begun: fullscreen + landscape lock,
+        // like a real football game. Every failure is silent — the match
+        // is already running and stays playable in portrait too.
+        try {
+          const el = document.documentElement as HTMLElement & {
+            webkitRequestFullscreen?: () => Promise<void> | void;
+          };
+          const req = el.requestFullscreen?.() ?? el.webkitRequestFullscreen?.();
+          if (req && typeof (req as Promise<void>).then === "function") {
+            void (req as Promise<void>)
+              .then(() => {
+                fsEntered.current = true;
+                try {
+                  const so = screen.orientation as ScreenOrientation & {
+                    lock?: (o: "landscape") => Promise<void>;
+                  };
+                  return so.lock?.("landscape");
+                } catch {
+                  return undefined;
+                }
+              })
+              .catch(() => {});
+          }
+        } catch {
+          // fullscreen unavailable — play on without it
+        }
+      } catch {
+        // Never leave the player staring at a dead VS screen: go back
+        // to ready with an explanation and let the next tap retry.
+        startingRef.current = false;
+        engineRef.current = null;
+        setPhase("ready");
+        setStartError("ম্যাচ শুরু করা যায়নি — আবার কিক অফ চাপো");
+        try {
+          sound.error();
+        } catch {
+          // ignore
+        }
+      }
+    });
   };
 
   useEffect(() => {
@@ -260,10 +318,20 @@ export function MatchScreen(props: Props) {
     "pointer-events-auto flex shrink-0 flex-col items-center justify-center rounded-full font-black text-white shadow-[0_4px_18px_rgba(0,0,0,0.55)] ring-2 ring-white/35 backdrop-blur-sm active:scale-95";
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col overflow-hidden bg-black text-[var(--text)]">
+    <div
+      className="fixed inset-0 z-40 flex flex-col overflow-hidden bg-black text-[var(--text)]"
+      style={{ touchAction: "none", overscrollBehavior: "none" }}
+    >
       {/* pitch — fills the whole screen */}
       <div className="relative min-h-0 flex-1 bg-[#0a5c2c]">
-        <div className="absolute inset-0 flex items-center justify-center">
+        <div
+          className="absolute inset-0 flex items-center justify-center"
+          style={
+            phase === "playing" && !landscape
+              ? { paddingBottom: "9.5rem" }
+              : undefined
+          }
+        >
           <canvas ref={canvasRef} className="match-pitch block" aria-label="ফুটবল মাঠ" />
         </div>
 
@@ -300,7 +368,19 @@ export function MatchScreen(props: Props) {
           )}
         </div>
 
-        {/* quit, top-right */}
+        {/* sound + quit, top-right */}
+        <button
+          type="button"
+          onClick={() => {
+            const next = !mutedUi;
+            sound.setMuted(next);
+            setMutedUi(next);
+          }}
+          aria-label={mutedUi ? "সাউন্ড চালু করো" : "সাউন্ড বন্ধ করো"}
+          className="absolute right-12 top-2 z-30 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-base ring-1 ring-white/30 sm:right-14 sm:top-3"
+        >
+          {mutedUi ? "🔇" : "🔊"}
+        </button>
         <button
           type="button"
           onClick={props.onQuit}
@@ -362,6 +442,9 @@ export function MatchScreen(props: Props) {
                 বামে জয়স্টিক দিয়ে দৌড়াও — ডানে পাস, শুট আর ট্যাকল
               </p>
             )}
+            {startError && (
+              <p className="mt-4 text-sm font-bold text-[var(--danger)]">{startError}</p>
+            )}
             <button
               type="button"
               onClick={startMatch}
@@ -369,6 +452,9 @@ export function MatchScreen(props: Props) {
             >
               কিক অফ ▶
             </button>
+            <p className="mt-3 text-xs font-semibold text-white/60">
+              পুরো ৯০ মিনিটের ম্যাচ — আসল সময়ে মাত্র ৬ মিনিটে শেষ
+            </p>
           </div>
         )}
 
@@ -478,7 +564,10 @@ export function MatchScreen(props: Props) {
               <button
                 type="button"
                 aria-label="শুট করো"
-                onPointerDown={() => engineRef.current?.pressShoot()}
+                onPointerDown={() => {
+                  sound.kick();
+                  engineRef.current?.pressShoot();
+                }}
                 className={`${actionBtn} absolute bottom-0 right-0 h-20 w-20 bg-[#e63946]/85 text-base landscape:h-24 landscape:w-24`}
               >
                 <span className="text-xl leading-none">⚽</span>
@@ -487,7 +576,10 @@ export function MatchScreen(props: Props) {
               <button
                 type="button"
                 aria-label="পাস দাও"
-                onPointerDown={() => engineRef.current?.pressPass()}
+                onPointerDown={() => {
+                  sound.kick();
+                  engineRef.current?.pressPass();
+                }}
                 className={`${actionBtn} absolute bottom-1 right-[5.5rem] h-16 w-16 bg-[#2563eb]/85 text-sm landscape:right-28 landscape:h-[4.5rem] landscape:w-[4.5rem]`}
               >
                 <span className="text-base leading-none">➤</span>
