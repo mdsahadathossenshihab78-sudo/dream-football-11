@@ -8,6 +8,7 @@ import type { Actions } from "../../server/src/actions";
 import { api, type ApiResponse } from "./api";
 import { MatchScreen, type MatchFinish } from "./MatchScreen";
 import { FlagBadge, PlayerAvatar, TeamLogo } from "./branding";
+import { sound } from "./sound";
 import type { EnginePlayerInfo, PosGroup } from "./engine";
 import stadiumHero from "./assets/stadium-hero.webp";
 
@@ -296,6 +297,194 @@ function bestXiIds(owned: PlayerDef[]): string[] {
   return ids;
 }
 
+// ---------------- formation model ----------------
+
+/** One formation slot: who stands where, doing what job. x/y are pitch
+ * percentages on the squad pitch (x left→right, y top=attack → bottom=
+ * own goal), so the same numbers drive the squad screen and, scaled, the
+ * match engine. */
+interface FSlot {
+  playerId: string;
+  role: string;
+  x: number;
+  y: number;
+}
+
+const ROLE_GROUP: Record<string, PosGroup> = {
+  GK: "GK",
+  LB: "DEF", CB: "DEF", RB: "DEF", LWB: "DEF", RWB: "DEF",
+  DM: "MID", CM: "MID", LM: "MID", RM: "MID", AM: "MID",
+  LW: "FWD", RW: "FWD", SS: "FWD", CF: "FWD",
+};
+const ROLE_OPTIONS = [
+  "LB", "CB", "RB", "LWB", "RWB",
+  "DM", "CM", "LM", "RM", "AM",
+  "LW", "RW", "SS", "CF",
+];
+
+type PresetSlot = { role: string; x: number; y: number };
+const FORMATION_PRESETS: { name: string; label: string; slots: PresetSlot[] }[] = [
+  {
+    name: "4-3-3", label: "৪-৩-৩",
+    slots: [
+      { role: "GK", x: 50, y: 90 },
+      { role: "LB", x: 14, y: 72 }, { role: "CB", x: 38, y: 76 }, { role: "CB", x: 62, y: 76 }, { role: "RB", x: 86, y: 72 },
+      { role: "LM", x: 22, y: 50 }, { role: "CM", x: 50, y: 55 }, { role: "RM", x: 78, y: 50 },
+      { role: "LW", x: 16, y: 24 }, { role: "CF", x: 50, y: 15 }, { role: "RW", x: 84, y: 24 },
+    ],
+  },
+  {
+    name: "4-4-2", label: "৪-৪-২ • দুই CF",
+    slots: [
+      { role: "GK", x: 50, y: 90 },
+      { role: "LB", x: 14, y: 72 }, { role: "CB", x: 38, y: 76 }, { role: "CB", x: 62, y: 76 }, { role: "RB", x: 86, y: 72 },
+      { role: "LM", x: 16, y: 48 }, { role: "CM", x: 38, y: 54 }, { role: "CM", x: 62, y: 54 }, { role: "RM", x: 84, y: 48 },
+      { role: "CF", x: 36, y: 15 }, { role: "CF", x: 64, y: 15 },
+    ],
+  },
+  {
+    name: "4-3-1-2", label: "৪-৩-১-২ • সেকেন্ড স্ট্রাইকার",
+    slots: [
+      { role: "GK", x: 50, y: 90 },
+      { role: "LB", x: 14, y: 72 }, { role: "CB", x: 38, y: 76 }, { role: "CB", x: 62, y: 76 }, { role: "RB", x: 86, y: 72 },
+      { role: "LM", x: 22, y: 52 }, { role: "CM", x: 50, y: 57 }, { role: "RM", x: 78, y: 52 },
+      { role: "SS", x: 50, y: 30 },
+      { role: "CF", x: 34, y: 13 }, { role: "CF", x: 66, y: 13 },
+    ],
+  },
+  {
+    name: "3-5-2", label: "৩-৫-২",
+    slots: [
+      { role: "GK", x: 50, y: 90 },
+      { role: "CB", x: 26, y: 74 }, { role: "CB", x: 50, y: 78 }, { role: "CB", x: 74, y: 74 },
+      { role: "LWB", x: 10, y: 50 }, { role: "DM", x: 36, y: 58 }, { role: "CM", x: 64, y: 58 }, { role: "RWB", x: 90, y: 50 }, { role: "AM", x: 50, y: 38 },
+      { role: "CF", x: 36, y: 15 }, { role: "CF", x: 64, y: 15 },
+    ],
+  },
+  {
+    name: "4-2-3-1", label: "৪-২-৩-১",
+    slots: [
+      { role: "GK", x: 50, y: 90 },
+      { role: "LB", x: 14, y: 72 }, { role: "CB", x: 38, y: 76 }, { role: "CB", x: 62, y: 76 }, { role: "RB", x: 86, y: 72 },
+      { role: "DM", x: 36, y: 59 }, { role: "DM", x: 64, y: 59 },
+      { role: "LM", x: 18, y: 36 }, { role: "AM", x: 50, y: 32 }, { role: "RM", x: 82, y: 36 },
+      { role: "CF", x: 50, y: 12 },
+    ],
+  },
+  {
+    name: "5-3-2", label: "৫-৩-২",
+    slots: [
+      { role: "GK", x: 50, y: 90 },
+      { role: "LWB", x: 10, y: 64 }, { role: "CB", x: 30, y: 76 }, { role: "CB", x: 50, y: 79 }, { role: "CB", x: 70, y: 76 }, { role: "RWB", x: 90, y: 64 },
+      { role: "CM", x: 28, y: 48 }, { role: "CM", x: 50, y: 53 }, { role: "CM", x: 72, y: 48 },
+      { role: "CF", x: 36, y: 15 }, { role: "CF", x: 64, y: 15 },
+    ],
+  },
+];
+
+function parseFormation(json: string | null): FSlot[] | null {
+  if (!json) return null;
+  try {
+    const f = JSON.parse(json) as { slots?: unknown };
+    if (!f || !Array.isArray(f.slots) || f.slots.length !== 11) return null;
+    const slots: FSlot[] = [];
+    for (const raw of f.slots) {
+      const s = raw as Partial<FSlot>;
+      if (
+        typeof s.playerId !== "string" ||
+        typeof s.role !== "string" ||
+        !(s.role in ROLE_GROUP) ||
+        typeof s.x !== "number" ||
+        typeof s.y !== "number"
+      ) {
+        return null;
+      }
+      slots.push({ playerId: s.playerId, role: s.role, x: s.x, y: s.y });
+    }
+    if (new Set(slots.map((s) => s.playerId)).size !== 11) return null;
+    if (slots.filter((s) => s.role === "GK").length !== 1) return null;
+    return slots;
+  } catch {
+    return null;
+  }
+}
+
+/** Lay the given players onto a preset's slots, best fit per line. */
+function layOnPreset(players: PlayerDef[], preset: PresetSlot[]): FSlot[] {
+  const used = new Set<string>();
+  const byGroup = (g: PosGroup) =>
+    players.filter((pl) => pl.group === g && !used.has(pl.id)).sort((a, b) => b.rating - a.rating);
+  const slots: FSlot[] = [];
+  for (const p of preset) {
+    const g = ROLE_GROUP[p.role] ?? "MID";
+    const pick =
+      byGroup(g)[0] ??
+      players.find((pl) => !used.has(pl.id) && pl.group !== "GK") ??
+      players.find((pl) => !used.has(pl.id));
+    if (!pick) continue;
+    used.add(pick.id);
+    slots.push({ playerId: pick.id, role: p.role, x: p.x, y: p.y });
+  }
+  return slots;
+}
+
+/** The formation to use when none is saved: the current XI on a 4-3-3. */
+function defaultFormation(profile: Profile, playerById: Map<string, PlayerDef>): FSlot[] {
+  const xi = profile.squad
+    .filter((s) => s.inXi)
+    .map((s) => playerById.get(s.playerId))
+    .filter((pl): pl is PlayerDef => pl != null);
+  const preset = FORMATION_PRESETS[0]?.slots ?? [];
+  return layOnPreset(xi, preset);
+}
+
+/** The saved (or default) formation as a match lineup: engine player
+ * infos whose group comes from the slot ROLE (a CF plays as a forward
+ * wherever he stands), plus homes in engine pitch units. */
+function matchLineup(
+  profile: Profile,
+  playerById: Map<string, PlayerDef>,
+): { infos: EnginePlayerInfo[]; slots: { x: number; y: number }[] } {
+  const inXi = new Set(profile.squad.filter((s) => s.inXi).map((s) => s.playerId));
+  const saved = parseFormation(profile.formationJson);
+  const formation =
+    saved && saved.every((s) => inXi.has(s.playerId))
+      ? saved
+      : defaultFormation(profile, playerById);
+  const infos: EnginePlayerInfo[] = [];
+  const slots: { x: number; y: number }[] = [];
+  for (const s of formation) {
+    const pl = playerById.get(s.playerId);
+    if (!pl) continue;
+    infos.push({
+      name: pl.name,
+      pos: s.role,
+      group: ROLE_GROUP[s.role] ?? pl.group,
+      rating: pl.rating,
+      pace: pl.pace,
+      shooting: pl.shooting,
+      passing: pl.passing,
+      defense: pl.defense,
+    });
+    slots.push({ x: s.x, y: (s.y / 100) * 150 });
+  }
+  return { infos, slots };
+}
+
+function formationShape(slots: FSlot[]): string {
+  let d = 0;
+  let m = 0;
+  let f = 0;
+  for (const s of slots) {
+    const g = ROLE_GROUP[s.role];
+    if (g === "DEF") d += 1;
+    else if (g === "MID") m += 1;
+    else if (g === "FWD") f += 1;
+  }
+  const bn = (n: number) => String(n).replace(/\d/g, (c) => "০১২৩৪৫৬৭৮৯"[Number(c)] ?? c);
+  return `${bn(d)}-${bn(m)}-${bn(f)}`;
+}
+
 // ---------------- app ----------------
 
 type View = "home" | "teams" | "squad" | "store" | "play";
@@ -336,6 +525,62 @@ export function App() {
   const [matchKey, setMatchKey] = useState(0);
   const [tourney, setTourney] = useState<Tourney | null>(null);
   const tourneyInitFor = useRef<number | null>(null);
+  const [splashGone, setSplashGone] = useState(false);
+  const [splashOut, setSplashOut] = useState(false);
+  const [mutedUi, setMutedUi] = useState<boolean>(() => sound.isMuted());
+
+  // Intro splash: plays once when the game opens, tap to skip.
+  useEffect(() => {
+    const t1 = window.setTimeout(() => setSplashOut(true), 1800);
+    const t2 = window.setTimeout(() => setSplashGone(true), 2150);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, []);
+
+  // Sound: the first tap anywhere unlocks audio (browser rule); every
+  // button press in the game answers with a click blip.
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      sound.unlock();
+      const t = e.target as HTMLElement | null;
+      if (t?.closest("button")) sound.click();
+    };
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
+  }, []);
+
+  const splashEl = !splashGone ? (
+    <button
+      type="button"
+      aria-label="Dream Football 11 — শুরু করতে ট্যাপ করো"
+      onClick={() => {
+        setSplashOut(true);
+        window.setTimeout(() => setSplashGone(true), 300);
+      }}
+      className={`fixed inset-0 z-[60] flex flex-col items-center justify-center overflow-hidden bg-[#02060f] ${splashOut ? "splash-out" : ""}`}
+      style={{ touchAction: "none" }}
+    >
+      <img src={stadiumHero} alt="" className="absolute inset-0 h-full w-full object-cover opacity-45" />
+      <div className="absolute inset-0 bg-gradient-to-t from-[#02060f] via-transparent to-[#02060f]/70" />
+      <div className="floodlight absolute left-1/2 top-10 h-40 w-[130%] -translate-x-1/2 rounded-[100%] bg-[var(--gold)]/15 blur-3xl" />
+      <span className="splash-ball relative flex h-24 w-24 items-center justify-center rounded-full bg-white shadow-[0_18px_40px_rgba(0,0,0,0.6)]">
+        <span className="h-9 w-9 rounded-full bg-[#111]" style={{ clipPath: "polygon(50% 0, 100% 38%, 81% 100%, 19% 100%, 0 38%)" }} />
+        <span className="absolute inset-0 rounded-full ring-2 ring-black/25" />
+      </span>
+      <span className="splash-title relative mt-6 -skew-x-6 text-center text-4xl font-black italic tracking-tight text-white">
+        DREAM <span className="text-[var(--gold)]">FOOTBALL 11</span>
+      </span>
+      <span className="relative mt-2 text-[11px] font-black uppercase tracking-[0.35em] text-white/70">
+        11 vs 11 • নিজের দল, নিজের ফরমেশন
+      </span>
+      <span className="relative mt-8 h-1.5 w-52 overflow-hidden rounded-full bg-white/15">
+        <span className="splash-bar block h-full w-full rounded-full bg-[var(--accent)]" />
+      </span>
+      <span className="relative mt-3 text-xs font-bold text-white/60">লোড হচ্ছে… ট্যাপ করলে শুরু</span>
+    </button>
+  ) : null;
 
   const catalogQ = useQuery({ queryKey: ["catalog"], queryFn: () => api.getCatalog({}) });
   const profileQ = useQuery({
@@ -456,12 +701,15 @@ export function App() {
 
   if (!profile) {
     return (
-      <LoginScreen
-        onDone={(id) => {
-          setProfileId(id);
-          storeProfileId(id);
-        }}
-      />
+      <>
+        <LoginScreen
+          onDone={(id) => {
+            setProfileId(id);
+            storeProfileId(id);
+          }}
+        />
+        {splashEl}
+      </>
     );
   }
 
@@ -470,13 +718,15 @@ export function App() {
   const cpuTeam = matchCfg ? teamById.get(matchCfg.cpuTeamId) : undefined;
 
   if (matchCfg && userTeam && cpuTeam) {
+    const lineup = matchLineup(profile, playerById);
     return (
       <MatchScreen
         key={matchKey}
         profileId={profile.profileId}
         userTeam={userTeam}
         cpuTeam={cpuTeam}
-        userXI={xiInfos(profile, playerById)}
+        userXI={lineup.infos}
+        userSlots={lineup.slots}
         cpuXI={makeCpuXI(cpuTeam)}
         mode={matchCfg.mode}
         stage={matchCfg.stage}
@@ -511,13 +761,28 @@ export function App() {
               <p className="text-[11px] font-semibold text-[var(--dim)]">{profile.name} • ম্যানেজার</p>
             </div>
           </div>
-          <div className="game-panel flex items-center bg-[var(--surface2)] px-3.5 py-1.5 ring-1 ring-[var(--gold)]/50">
-            <Coin amount={profile.coins} />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const next = !mutedUi;
+                sound.setMuted(next);
+                setMutedUi(next);
+              }}
+              aria-label={mutedUi ? "সাউন্ড চালু করো" : "সাউন্ড বন্ধ করো"}
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--surface2)] text-base ring-1 ring-[var(--border)]"
+            >
+              {mutedUi ? "🔇" : "🔊"}
+            </button>
+            <div className="game-panel flex items-center bg-[var(--surface2)] px-3.5 py-1.5 ring-1 ring-[var(--gold)]/50">
+              <Coin amount={profile.coins} />
+            </div>
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-3xl px-4 pb-28 pt-4">
+        <div key={view} className="view-in">
         {view === "home" && (
           <HomeScreen
             profile={profile}
@@ -591,6 +856,7 @@ export function App() {
             onDropTournament={() => persistTourney(null)}
           />
         )}
+        </div>
       </main>
 
       {/* game dock */}
@@ -627,6 +893,7 @@ export function App() {
           })}
         </div>
       </nav>
+      {splashEl}
     </div>
   );
 }
@@ -966,14 +1233,7 @@ function TeamsScreen({
   );
 }
 
-// ---------------- squad ----------------
-
-const SLOT_POS: { x: number; y: number }[] = [
-  { x: 50, y: 88 }, // GK
-  { x: 14, y: 74 }, { x: 38, y: 78 }, { x: 62, y: 78 }, { x: 86, y: 74 },
-  { x: 22, y: 52 }, { x: 50, y: 57 }, { x: 78, y: 52 },
-  { x: 16, y: 26 }, { x: 50, y: 18 }, { x: 84, y: 26 },
-];
+// ---------------- squad & formation ----------------
 
 function SquadScreen({
   profile,
@@ -986,81 +1246,162 @@ function SquadScreen({
   team?: TeamDef;
   onChanged: () => void;
 }) {
-  const [selected, setSelected] = useState<string | null>(null);
+  const derived = useMemo(
+    () => parseFormation(profile.formationJson) ?? defaultFormation(profile, playerById),
+    [profile, playerById],
+  );
+  // Edits live in a draft overlay until the user saves — the saved
+  // formation from the server stays the source of truth underneath.
+  const [draft, setDraft] = useState<FSlot[] | null>(null);
+  const slots = draft ?? derived;
+  const dirty = draft != null;
+  const [selected, setSelected] = useState<number | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const pitchRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    idx: number;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const [dragPos, setDragPos] = useState<{ idx: number; x: number; y: number } | null>(null);
 
-  const owned = profile.squad
-    .map((s) => ({ def: playerById.get(s.playerId), inXi: s.inXi }))
-    .filter((r): r is { def: PlayerDef; inXi: boolean } => r.def != null);
-  const xiOrdered: PlayerDef[] = [];
-  for (const g of GROUP_ORDER) {
-    xiOrdered.push(
-      ...owned.filter((r) => r.inXi && r.def.group === g).map((r) => r.def).sort((a, b) => b.rating - a.rating),
-    );
-  }
-  const xiIds = new Set(xiOrdered.map((pl) => pl.id));
+  const slotPlayer = (s: FSlot) => playerById.get(s.playerId);
+  const inSquad = new Set(slots.map((s) => s.playerId));
+  const bench = profile.squad
+    .filter((s) => !inSquad.has(s.playerId))
+    .map((s) => playerById.get(s.playerId))
+    .filter((pl): pl is PlayerDef => pl != null)
+    .sort((a, b) => b.rating - a.rating);
 
-  const setXi = useMutation({
-    mutationFn: (ids: string[]) => api.setXi({ profileId: profile.profileId, playerIds: ids }),
+  const save = useMutation({
+    mutationFn: (ss: FSlot[]) =>
+      api.saveFormation({
+        profileId: profile.profileId,
+        slots: ss.map((s) => ({
+          playerId: s.playerId,
+          role: s.role,
+          x: Math.round(s.x * 10) / 10,
+          y: Math.round(s.y * 10) / 10,
+        })),
+      }),
     onSuccess: () => {
+      setDraft(null);
       setSelected(null);
-      setHint(null);
+      setHint("ফরমেশন সেভ হয়েছে ✓ এখন ম্যাচে এই ফরমেশনেই খেলবে");
       onChanged();
     },
-    onError: (e) => setError(e instanceof Error ? e.message : "একাদশ সেভ হয়নি"),
+    onError: (e) => {
+      setError(e instanceof Error ? e.message : "ফরমেশন সেভ হয়নি");
+      sound.error();
+    },
   });
 
-  const tapPlayer = (pl: PlayerDef) => {
+  const edit = (next: FSlot[]) => {
     setError(null);
-    if (!selected) {
-      setSelected(pl.id);
+    setDraft(next);
+  };
+
+  const tapSlot = (idx: number) => {
+    setError(null);
+    if (selected == null) {
+      setSelected(idx);
+      const s = slots[idx];
+      const pl = s ? slotPlayer(s) : undefined;
       setHint(
-        xiIds.has(pl.id)
-          ? `${pl.name} বাছা হয়েছে — বদলাতে বেঞ্চের একই পজিশনের খেলোয়াড়ে ট্যাপ করো`
-          : `${pl.name} বাছা হয়েছে — একাদশে ঢোকাতে একই পজিশনের খেলোয়াড়ে ট্যাপ করো`,
+        pl
+          ? `${pl.name} (${s?.role}) — টেনে ধরে যেকোনো জায়গায় বসাও, নিচ থেকে রোল বদলাও, বদলাতে বেঞ্চে ট্যাপ করো`
+          : null,
       );
       return;
     }
-    if (selected === pl.id) {
+    if (selected === idx) {
       setSelected(null);
       setHint(null);
       return;
     }
-    const first = playerById.get(selected);
-    if (!first) {
-      setSelected(pl.id);
+    const a = slots[selected];
+    const b = slots[idx];
+    if (!a || !b) return;
+    if ((a.role === "GK") !== (b.role === "GK")) {
+      setHint("গোলকিপার শুধু GK জায়গাতেই থাকবে");
       return;
     }
-    const firstInXi = xiIds.has(first.id);
-    const thisInXi = xiIds.has(pl.id);
-    if (firstInXi === thisInXi) {
-      setSelected(pl.id);
-      return;
-    }
-    if (first.group !== pl.group) {
-      setHint("শুধু একই পজিশনের খেলোয়াড়ের সাথে বদলানো যাবে");
-      return;
-    }
-    const outId = firstInXi ? first.id : pl.id;
-    const inId = firstInXi ? pl.id : first.id;
-    const newIds = xiOrdered.map((x) => (x.id === outId ? inId : x.id));
-    // keep engine slot order: GK, DEF, MID, FWD by rating
-    const newDefs = newIds
-      .map((id) => playerById.get(id))
-      .filter((d): d is PlayerDef => d != null);
-    const ordered: string[] = [];
-    for (const g of GROUP_ORDER) {
-      ordered.push(
-        ...newDefs.filter((d) => d.group === g).sort((a, b) => b.rating - a.rating).map((d) => d.id),
-      );
-    }
-    setXi.mutate(ordered);
+    edit(
+      slots.map((s, i) =>
+        i === selected ? { ...s, playerId: b.playerId } : i === idx ? { ...s, playerId: a.playerId } : s,
+      ),
+    );
+    setSelected(null);
+    setHint("খেলোয়াড় বদল হয়েছে — নিচে সেভ করো");
   };
 
-  const xiAvg = xiOrdered.length
-    ? Math.round(xiOrdered.reduce((s, pl) => s + pl.rating, 0) / xiOrdered.length)
+  const tapBench = (pl: PlayerDef) => {
+    setError(null);
+    if (selected == null) {
+      setHint("আগে মাঠে একটা জায়গায় ট্যাপ করো, তারপর বেঞ্চের খেলোয়াড়ে ট্যাপ করলে সে ওই জায়গায় ঢুকবে");
+      return;
+    }
+    const slot = slots[selected];
+    if (!slot) return;
+    if (slot.role === "GK" && pl.group !== "GK") {
+      setHint("GK জায়গায় শুধু গোলকিপারই বসবে");
+      return;
+    }
+    if (pl.group === "GK" && slot.role !== "GK") {
+      setHint("গোলকিপার শুধু GK জায়গাতেই খেলবে");
+      return;
+    }
+    edit(slots.map((s, i) => (i === selected ? { ...s, playerId: pl.id } : s)));
+    setSelected(null);
+    setHint(`${pl.name} একাদশে ঢুকল — নিচে সেভ করো`);
+  };
+
+  const setRole = (role: string) => {
+    if (selected == null) return;
+    const slot = slots[selected];
+    if (!slot || slot.role === "GK") return;
+    edit(slots.map((s, i) => (i === selected ? { ...s, role } : s)));
+    setHint(`রোল এখন ${role} — নিচে সেভ করো`);
+  };
+
+  const applyPreset = (preset: (typeof FORMATION_PRESETS)[number]) => {
+    const players = slots
+      .map((s) => slotPlayer(s))
+      .filter((pl): pl is PlayerDef => pl != null);
+    edit(layOnPreset(players, preset.slots));
+    setSelected(null);
+    setHint(`${preset.label} বসানো হয়েছে — চাইলে টেনে আরও সাজাও, তারপর সেভ করো`);
+  };
+
+  const applyBestXi = () => {
+    const owned = profile.squad
+      .map((s) => playerById.get(s.playerId))
+      .filter((pl): pl is PlayerDef => pl != null);
+    const ids = new Set(bestXiIds(owned));
+    const players = owned.filter((pl) => ids.has(pl.id));
+    edit(layOnPreset(players, FORMATION_PRESETS[0]?.slots ?? []));
+    setSelected(null);
+    setHint("সেরা একাদশ বসানো হয়েছে — নিচে সেভ করো");
+  };
+
+  const pitchPct = (clientX: number, clientY: number) => {
+    const rect = pitchRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: Math.min(95, Math.max(5, ((clientX - rect.left) / rect.width) * 100)),
+      y: Math.min(95, Math.max(5, ((clientY - rect.top) / rect.height) * 100)),
+    };
+  };
+
+  const xiAvg = slots.length
+    ? Math.round(slots.reduce((sum, s) => sum + (slotPlayer(s)?.rating ?? 0), 0) / slots.length)
     : 0;
+  const selectedSlot = selected != null ? slots[selected] : undefined;
+  const selectedPlayer = selectedSlot ? slotPlayer(selectedSlot) : undefined;
+
   return (
     <div>
       <div className="flex items-end justify-between gap-3">
@@ -1072,51 +1413,116 @@ function SquadScreen({
               {team?.kind === "national" && <FlagBadge teamId={team.id} width={28} />}
             </h2>
             <p className="text-sm font-semibold text-[var(--dim)]">
-              {team ? `${team.name} • ` : ""}ফরমেশন ৪-৩-৩ • দলের শক্তি{" "}
+              {team ? `${team.name} • ` : ""}ফরমেশন{" "}
+              <span className="font-black text-white">{formationShape(slots)}</span> • দলের শক্তি{" "}
               <span className="font-black text-[var(--gold)]">{xiAvg}</span>
             </p>
           </div>
         </div>
         <button
           type="button"
-          onClick={() => setXi.mutate(bestXiIds(owned.map((r) => r.def)))}
+          onClick={applyBestXi}
           className="game-panel shrink-0 bg-[var(--gold)] px-4 py-2 text-sm font-black italic text-black"
         >
           সেরা একাদশ
         </button>
       </div>
 
-      {/* formation pitch with mini player cards, like a game team screen */}
+      <p className="mt-2 text-sm font-semibold text-white/80">
+        ✥ যেকোনো খেলোয়াড়কে <span className="text-[var(--gold)]">টেনে ধরে</span> মাঠের যেকোনো
+        জায়গায় বসাও — নিজের মতো ফরমেশন বানাও।
+      </p>
+
+      {/* formation presets */}
+      <div className="mt-3 flex flex-wrap gap-1.5" role="group" aria-label="ফরমেশন প্রিসেট">
+        {FORMATION_PRESETS.map((p) => (
+          <button
+            key={p.name}
+            type="button"
+            onClick={() => applyPreset(p)}
+            aria-label={`ফরমেশন ${p.label}`}
+            className="min-h-9 rounded-full bg-[var(--surface2)] px-3 py-1.5 text-xs font-black ring-1 ring-[var(--border)]"
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* formation pitch — drag chips anywhere */}
       <div
-        className="game-panel relative mt-3 overflow-hidden ring-1 ring-white/20"
+        ref={pitchRef}
+        className="game-panel relative mt-3 touch-none overflow-hidden ring-1 ring-white/20"
         style={{
           aspectRatio: "100 / 118",
-          background:
-            "repeating-linear-gradient(to bottom, #148544 0 10%, #0f7038 10% 20%)",
+          background: "repeating-linear-gradient(to bottom, #148544 0 10%, #0f7038 10% 20%)",
         }}
       >
-        <div className="absolute inset-2 rounded-lg border-2 border-white/70" />
-        <div className="absolute left-2 right-2 top-1/2 h-0.5 bg-white/70" />
+        <div className="pointer-events-none absolute inset-2 rounded-lg border-2 border-white/70" />
+        <div className="pointer-events-none absolute left-2 right-2 top-1/2 h-0.5 bg-white/70" />
         <div
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/70"
+          className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/70"
           style={{ width: "22%", aspectRatio: "1" }}
         />
-        <div className="absolute left-1/2 top-2 h-10 w-1/2 -translate-x-1/2 border-2 border-t-0 border-white/70" />
-        <div className="absolute bottom-2 left-1/2 h-10 w-1/2 -translate-x-1/2 border-2 border-b-0 border-white/70" />
-        <span className="absolute left-3 top-2.5 rounded bg-black/55 px-2 py-0.5 text-[10px] font-black tracking-widest text-white">
-          ৪-৩-৩
+        <div className="pointer-events-none absolute left-1/2 top-2 h-10 w-1/2 -translate-x-1/2 border-2 border-t-0 border-white/70" />
+        <div className="pointer-events-none absolute bottom-2 left-1/2 h-10 w-1/2 -translate-x-1/2 border-2 border-b-0 border-white/70" />
+        <span className="pointer-events-none absolute left-3 top-2.5 rounded bg-black/55 px-2 py-0.5 text-[10px] font-black tracking-widest text-white">
+          {formationShape(slots)}
         </span>
-        {xiOrdered.map((pl, i) => {
-          const slot = SLOT_POS[i] ?? { x: 50, y: 50 };
-          const isSel = selected === pl.id;
+        <span className="pointer-events-none absolute right-3 top-2.5 rounded bg-black/55 px-2 py-0.5 text-[10px] font-black tracking-widest text-white/80">
+          আক্রমণ ↑
+        </span>
+        {slots.map((s, i) => {
+          const pl = slotPlayer(s);
+          if (!pl) return null;
+          const pos = dragPos?.idx === i ? dragPos : s;
+          const isSel = selected === i;
+          const isDrag = dragPos?.idx === i;
           return (
             <button
-              key={pl.id}
+              key={`${s.role}-${i}`}
               type="button"
-              onClick={() => tapPlayer(pl)}
-              aria-label={`${pl.name}, ${pl.pos}, রেটিং ${pl.rating}`}
-              className="absolute w-[19%] -translate-x-1/2 -translate-y-1/2"
-              style={{ left: `${slot.x}%`, top: `${slot.y}%` }}
+              aria-label={`${pl.name}, ${s.role}, রেটিং ${pl.rating} — টেনে জায়গা বদলাও`}
+              className={`absolute w-[19%] -translate-x-1/2 -translate-y-1/2 touch-none ${isDrag ? "chip-drag" : ""}`}
+              style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+              onPointerDown={(e) => {
+                (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                dragRef.current = {
+                  idx: i,
+                  pointerId: e.pointerId,
+                  startX: e.clientX,
+                  startY: e.clientY,
+                  moved: false,
+                };
+              }}
+              onPointerMove={(e) => {
+                const d = dragRef.current;
+                if (!d || d.idx !== i || d.pointerId !== e.pointerId) return;
+                if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > 7) d.moved = true;
+                if (d.moved) {
+                  const p = pitchPct(e.clientX, e.clientY);
+                  if (p) setDragPos({ idx: i, x: p.x, y: p.y });
+                }
+              }}
+              onPointerUp={(e) => {
+                const d = dragRef.current;
+                dragRef.current = null;
+                if (!d || d.idx !== i || d.pointerId !== e.pointerId) {
+                  setDragPos(null);
+                  return;
+                }
+                if (d.moved && dragPos?.idx === i) {
+                  edit(slots.map((sl, j) => (j === i ? { ...sl, x: dragPos.x, y: dragPos.y } : sl)));
+                  setSelected(i);
+                  setHint(`${pl.name}-কে নতুন জায়গায় বসানো হয়েছে — নিচে সেভ করো`);
+                } else {
+                  tapSlot(i);
+                }
+                setDragPos(null);
+              }}
+              onPointerCancel={() => {
+                dragRef.current = null;
+                setDragPos(null);
+              }}
             >
               <span
                 className={`card-sheen block overflow-hidden shadow-lg ${
@@ -1124,12 +1530,13 @@ function SquadScreen({
                 }`}
                 style={{
                   background: TIER_CARD[pl.tier],
-                  clipPath: "polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px))",
+                  clipPath:
+                    "polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px))",
                 }}
               >
                 <span className={`flex items-baseline justify-center gap-1 pt-1 ${TIER_CARD_TEXT[pl.tier]}`}>
                   <span className="text-lg font-black italic leading-none tabular-nums">{pl.rating}</span>
-                  <span className="text-[9px] font-black">{pl.pos}</span>
+                  <span className="text-[9px] font-black">{s.role}</span>
                 </span>
                 <span className="flex justify-center py-0.5">
                   <PlayerFigure pl={pl} size={30} />
@@ -1143,31 +1550,100 @@ function SquadScreen({
         })}
       </div>
 
+      {/* role picker for the selected slot */}
+      {selectedSlot && selectedPlayer && (
+        <div className="game-panel mt-3 bg-[var(--surface)] p-3">
+          <p className="text-sm font-black">
+            {selectedPlayer.name}{" "}
+            <span className="text-[var(--gold)]">• {selectedSlot.role}</span>
+            <span className="ml-2 text-xs font-semibold text-[var(--dim)]">
+              আসল পজিশন {selectedPlayer.pos}
+            </span>
+          </p>
+          {selectedSlot.role === "GK" ? (
+            <p className="mt-1.5 text-xs font-semibold text-[var(--dim)]">
+              গোলকিপারের জায়গা ঠিক আছে — বদলাতে বেঞ্চের গোলকিপারে ট্যাপ করো।
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-[11px] font-bold text-[var(--dim)]">এই জায়গার রোল বদলাও:</p>
+              <div className="mt-1.5 flex flex-wrap gap-1.5" role="group" aria-label="রোল বাছাই">
+                {ROLE_OPTIONS.map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setRole(r)}
+                    aria-label={`রোল ${r}`}
+                    aria-pressed={selectedSlot.role === r}
+                    className={`min-h-8 rounded-full px-2.5 py-1 text-xs font-black ${
+                      selectedSlot.role === r
+                        ? "bg-[var(--gold)] text-black"
+                        : "bg-[var(--surface2)] text-white ring-1 ring-[var(--border)]"
+                    }`}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] font-semibold text-[var(--dim)]">
+                CF = সেন্টার ফরোয়ার্ড, SS = সেকেন্ড স্ট্রাইকার, LW/RW = উইঙ্গার — যেমন চাও সাজাও।
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
       {hint && <p className="mt-2 text-sm font-semibold text-[var(--gold)]">{hint}</p>}
       {error && <p className="mt-2 text-sm font-semibold text-[var(--danger)]">{error}</p>}
 
+      {dirty && (
+        <div className="game-panel mt-3 flex gap-2 bg-[var(--surface2)] p-2 ring-1 ring-[var(--gold)]/60">
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(null);
+              setSelected(null);
+              setHint(null);
+            }}
+            className="min-h-11 flex-1 bg-white/10 font-black italic text-white ring-1 ring-white/30"
+          >
+            বাতিল
+          </button>
+          <button
+            type="button"
+            disabled={save.isPending}
+            onClick={() => save.mutate(slots)}
+            className="game-panel min-h-11 flex-[2] bg-[var(--accent)] font-black italic text-white disabled:opacity-60"
+          >
+            {save.isPending ? "সেভ হচ্ছে…" : "ফরমেশন সেভ করো ✓"}
+          </button>
+        </div>
+      )}
+
       <h3 className="mt-5 text-lg font-black italic">বেঞ্চ ও রিজার্ভ</h3>
       <p className="text-xs font-semibold text-[var(--dim)]">
-        কার্ডে ট্যাপ করে একাদশের একই পজিশনের খেলোয়াড়ের সাথে বদলাও
+        {selected != null
+          ? "বেঞ্চের কারো কার্ডে ট্যাপ করলেই সে বাছাই করা জায়গায় ঢুকে যাবে"
+          : "আগে মাঠে একটা জায়গা বাছো, তারপর বেঞ্চের কার্ডে ট্যাপ করো"}
       </p>
       <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {owned
-          .filter((r) => !r.inXi)
-          .sort((a, b) => b.def.rating - a.def.rating)
-          .map(({ def: pl }) => (
-            <button
-              key={pl.id}
-              type="button"
-              onClick={() => tapPlayer(pl)}
-              aria-label={`${pl.name}, ${pl.pos}, রেটিং ${pl.rating} — একাদশে বদলাতে ট্যাপ করো`}
-              className={`text-left ${selected === pl.id ? "ring-[3px] ring-[var(--gold)]" : ""}`}
-              style={{ clipPath: "polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px))" }}
-            >
-              <PlayerCard compact pl={pl} />
-            </button>
-          ))}
+        {bench.map((pl) => (
+          <button
+            key={pl.id}
+            type="button"
+            onClick={() => tapBench(pl)}
+            aria-label={`${pl.name}, ${pl.pos}, রেটিং ${pl.rating} — একাদশে ঢোকাতে ট্যাপ করো`}
+            className="text-left"
+            style={{
+              clipPath:
+                "polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px))",
+            }}
+          >
+            <PlayerCard compact pl={pl} />
+          </button>
+        ))}
       </div>
-      {owned.every((r) => r.inXi) && (
+      {bench.length === 0 && (
         <p className="mt-2 text-sm text-[var(--dim)]">বেঞ্চ খালি — স্টোর থেকে খেলোয়াড় কিনলে তার কার্ড এখানে আসবে।</p>
       )}
     </div>
@@ -1194,11 +1670,13 @@ function StoreScreen({
       const pl = players.find((x) => x.id === playerId);
       setBought(pl ? `${pl.name} তোমার দলে যোগ দিল!` : null);
       setError(null);
+      sound.buy();
       onChanged();
     },
     onError: (e) => {
       setBought(null);
       setError(e instanceof Error ? e.message : "কেনা যায়নি");
+      sound.error();
     },
   });
 
