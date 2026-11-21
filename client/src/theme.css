@@ -1,0 +1,92 @@
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --text-5xl: 48px;
+  --text-5xl--line-height: 52px;
+}
+
+:root {
+  color-scheme: dark;
+  --bg: #030812;
+  --surface: #0a1524;
+  --surface2: #101f33;
+  --text: #eef4ff;
+  --dim: #8fa5bd;
+  --border: #1e3550;
+  --accent: #00d95f;
+  --accent-dark: #009e43;
+  --gold: #f5c518;
+  --danger: #e63946;
+  --radius: 10px;
+  --space-surface: var(--surface);
+  --space-surface-alt: var(--surface2);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+
+/* Phone tap targets: at least 32px tall. */
+@layer base {
+  button, [role="button"], select, summary, input:not([type="checkbox"], [type="radio"]) {
+    min-height: 2rem;
+  }
+}
+
+canvas.match-pitch {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---- game look helpers ---- */
+
+/* Angled, cut-corner panel like console football games use. */
+.game-panel {
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+
+/* Player card silhouette area pattern. */
+.card-sheen {
+  background-image:
+    radial-gradient(ellipse 90% 55% at 50% 0%, rgba(255, 255, 255, 0.22), transparent 60%),
+    repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.05) 0 6px, transparent 6px 14px);
+}
+
+@keyframes rotate-hint {
+  0%, 55% { transform: rotate(0deg); }
+  80%, 100% { transform: rotate(90deg); }
+}
+.rotate-hint {
+  animation: rotate-hint 2.2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes goal-pop {
+  0% { transform: scale(0.6) rotate(-4deg); opacity: 0; }
+  55% { transform: scale(1.12) rotate(2deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+.goal-pop {
+  animation: goal-pop 0.45s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rotate-hint, .goal-pop { animation: none; }
+}

@@ -1,0 +1,8 @@
+{
+  "runtime": "typescript",
+  "platformVersion": 29,
+  "entry": "client/dist/index.html",
+  "name": "Dream Football 11",
+  "slug": "shihab-football",
+  "managedCronJobs": []
+}
