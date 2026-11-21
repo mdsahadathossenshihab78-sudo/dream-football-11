@@ -15,6 +15,13 @@
       "when": 1795229661796,
       "tag": "0002_game_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795233835432,
+      "tag": "0003_add_formation_json",
+      "breakpoints": true
     }
   ]
 }
