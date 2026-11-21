@@ -87,6 +87,75 @@ canvas.match-pitch {
   animation: goal-pop 0.45s cubic-bezier(0.2, 1.4, 0.4, 1) both;
 }
 
+/* Every button press answers with a quick squash, like a game pad. */
+button {
+  transition: transform 0.08s ease, filter 0.12s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+button:active {
+  transform: scale(0.94);
+  filter: brightness(1.18);
+}
+
+/* Screen changes sweep in instead of snapping. */
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.995); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.view-in {
+  animation: view-in 0.28s ease-out both;
+}
+
+/* ---- splash / intro ---- */
+@keyframes splash-ball {
+  0% { transform: translateY(-46vh) scale(0.6) rotate(0deg); opacity: 0; }
+  45% { opacity: 1; }
+  62% { transform: translateY(0) scale(1) rotate(300deg); }
+  74% { transform: translateY(-26px) scale(1.04) rotate(340deg); }
+  86% { transform: translateY(0) scale(1) rotate(358deg); }
+  100% { transform: translateY(0) scale(1) rotate(360deg); }
+}
+.splash-ball {
+  animation: splash-ball 1s cubic-bezier(0.3, 1.2, 0.4, 1) both;
+}
+@keyframes splash-title {
+  0% { opacity: 0; transform: translateY(18px) skewX(-6deg); letter-spacing: 0.12em; }
+  100% { opacity: 1; transform: translateY(0) skewX(-6deg); letter-spacing: 0; }
+}
+.splash-title {
+  animation: splash-title 0.55s 0.55s ease-out both;
+}
+@keyframes splash-bar {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+.splash-bar {
+  transform-origin: left;
+  animation: splash-bar 1.5s 0.25s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+@keyframes splash-out {
+  to { opacity: 0; transform: scale(1.06); }
+}
+.splash-out {
+  animation: splash-out 0.32s ease-in both;
+}
+@keyframes floodlight {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+.floodlight {
+  animation: floodlight 1.6s ease-in-out infinite;
+}
+
+/* Player chip being dragged on the formation pitch. */
+.chip-drag {
+  z-index: 30;
+  filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.55));
+  scale: 1.12;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .rotate-hint, .goal-pop { animation: none; }
+  .rotate-hint, .goal-pop, .view-in, .splash-ball, .splash-title, .splash-bar, .floodlight { animation: none; }
+  button { transition: none; }
+  button:active { transform: none; }
 }
