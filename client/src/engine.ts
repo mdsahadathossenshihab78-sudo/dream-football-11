@@ -113,6 +113,10 @@ export class MatchEngine {
       cpuRating: number;
       userRating: number;
       callbacks: MatchCallbacks;
+      /** The user's custom formation homes in pitch units (x 0..100,
+       * y 0..150, user attacks y=0), aligned with userXI. Missing entries
+       * fall back to the default 4-3-3 slots. */
+      userSlots?: { x: number; y: number }[];
     },
   ) {
     this.canvas = canvas;
@@ -126,9 +130,10 @@ export class MatchEngine {
     this.cpuSkill = clamp(1 + (opts.cpuRating - opts.userRating) * 0.006, 0.85, 1.15);
 
     const mk = (info: EnginePlayerInfo, team: 0 | 1, slot: number): P => {
-      const s = SLOTS[slot] ?? { x: 50, y: 75 };
-      const hx = s.x;
-      const hy = team === 0 ? s.y : H - s.y;
+      const custom = team === 0 ? opts.userSlots?.[slot] : undefined;
+      const s = custom ?? SLOTS[slot] ?? { x: 50, y: 75 };
+      const hx = clamp(s.x, 3, W - 3);
+      const hy = team === 0 ? clamp(s.y, 3, H - 3) : H - (SLOTS[slot]?.y ?? s.y);
       return {
         team,
         info,
