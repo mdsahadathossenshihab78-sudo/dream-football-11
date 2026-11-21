@@ -18,6 +18,10 @@ export const profiles = sqliteTable("profiles", {
   losses: integer("losses").notNull().default(0),
   goalsFor: integer("goals_for").notNull().default(0),
   goalsAgainst: integer("goals_against").notNull().default(0),
+  // The user's custom formation: 11 slots {playerId, role, x, y} as JSON.
+  // x/y are pitch percentages (x 4..96 left→right, y 4..96 top=attack →
+  // bottom=own goal) on the squad screen's formation pitch.
+  formationJson: text("formation_json"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .$defaultFn(() => new Date()),
